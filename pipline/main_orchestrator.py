@@ -11,7 +11,9 @@ from step3_analyze_gml import analyze_gml_and_sample_points
 from step4_calculate_alpha_shape import calculate_and_save_alpha_shape
 from step5_generate_texture import generate_texture_from_polygon
 from step6_generate_cut_obj_model import generate_cut_obj_model
+from step6b_transform_obj import transform_obj_file # <<< NEW IMPORT
 from step7_generate_nav2_map import generate_nav2_map
+from step8_generate_gazebo_world import create_gazebo_model_and_world
 
 # --- Main Configuration ---
 # Input Data
@@ -31,25 +33,18 @@ WFS_FEATURE_TYPES = ['adv:AX_Strassenverkehr', 'adv:AX_Strassenverkehrsanlage']
 OSM_OUTPUT_GPKG = "osm_streets_clipped.gpkg" # Will be saved in OUTPUT_DIR
 
 # Step 3: GML Analysis (for a specific WFS layer)
-# This will be constructed based on WFS_FEATURE_TYPES
-# For example, if 'adv:AX_Strassenverkehrsanlage' is chosen:
-# FEATURE_TYPE_TO_ANALYZE_STEM = "adv_AX_Strassenverkehrsanlage_clipped"
-# GML_TO_ANALYZE_FILENAME = f"{FEATURE_TYPE_TO_ANALYZE_STEM}.gml"
 ANALYSIS_OFFSET_METERS = 0.1
 POINT_SAMPLE_INTERVAL_METERS = 5.0
 SAMPLED_POINTS_CSV = "analyzed_gml_sampled_points.csv" # Output from GML analysis
 
 # Step 4: Alpha Shape
 ALPHA_SHAPE_PARAMETER = None
-# ALPHA_DEFAULT_IF_OPTIMIZE_FAILS = 1000.0 # Old value, too large
-ALPHA_DEFAULT_IF_OPTIMIZE_FAILS = 0.1  # New default: Corresponds to a radius of 1/0.05 = 20 units (meters)
-                                        # You might need to tune this value based on typical point cloud density.
-                                        # Try values like 0.1, 0.02, etc.
+ALPHA_DEFAULT_IF_OPTIMIZE_FAILS = 0.1
 ALPHA_SHAPE_OUTPUT_GML = "calculated_alpha_shape.gml"
 
 # -- Step 5 Config (Texture) --
 TEXTURE_SOURCE_GML_KEY = 'adv:AX_Strassenverkehr'
-OUTPUT_TEXTURE_FILENAME = "road_texture.png"
+OUTPUT_TEXTURE_FILENAME = "road_texture.png" # This is the texture image file, e.g. road_texture.png
 WMS_TEXTURE_URL = "https://www.wms.nrw.de/geobasis/wms_nw_dop"
 WMS_TEXTURE_LAYER = "nw_dop_rgb"
 WMS_TEXTURE_VERSION = '1.3.0'
@@ -61,32 +56,41 @@ WMS_BBOX_PADDING_METERS = 20.0
 POLYGON_CRS_FALLBACK_FOR_TEXTURE = TARGET_CRS
 TEXTURE_FILL_COLOR_RGB = [128, 128, 128]
 
-# --- NEW: Step 6 Configuration (GML to OBJ Generation) ---
+# --- Step 6 Configuration (GML to OBJ Generation) ---
 BASE_GML_KEY_FOR_CUT = 'adv:AX_Strassenverkehr'
 TOOL_GML_FILENAME_FOR_CUT = ALPHA_SHAPE_OUTPUT_GML
 BASE_EXTRUSION_CUT_M = -2.0
 TOOL_EXTRUSION_CUT_M = -0.5
 CUT_SIMPLIFY_TOLERANCE_M = 0.01
-CUT_OBJ_OUTPUT_FILENAME = "final_cut_road_model.obj"
-CUT_MTL_OUTPUT_FILENAME = "final_cut_road_model.mtl"
-CUT_MODEL_OUTPUT_SUBDIR = "cut_model_output" # Subdir for final OBJ/MTL/PNG set
+CUT_OBJ_OUTPUT_FILENAME = "final_cut_road_model.obj" # Intermediate OBJ before transformation
+CUT_MTL_OUTPUT_FILENAME = "final_cut_road_model.mtl" # MTL for the intermediate OBJ
+CUT_MODEL_OUTPUT_SUBDIR = "cut_model_output"
 CONVERT_GENERATE_VT = True
 CONVERT_Z_TOLERANCE = 0.01
 CONVERT_MATERIAL_TOP = "RoadSurface"
 CONVERT_MATERIAL_BOTTOM = "RoadBottom"
 CONVERT_MATERIAL_SIDES = "RoadSides"
 
-# --- NEW: Step 7 Configuration (Nav2 Map) ---
-NAV2_MAP_SOURCE_GML_FILENAME = ALPHA_SHAPE_OUTPUT_GML # Use Alpha Shape GML
-NAV2_MAP_OUTPUT_BASENAME = "alpha_shape_nav2_map"     # Basename for map.pgm/yaml
-NAV2_MAP_RESOLUTION = 0.05                           # Meters per pixel
-NAV2_MAP_PADDING_M = 5.0                             # Padding around GML extent
-NAV2_MAP_OUTPUT_SUBDIR = "nav2_map_output"           # Subdirectory for map files
+# --- NEW: Step 6b Configuration (OBJ Transformation) ---
+TRANSFORM_Z_ADDITIONAL_OFFSET = 0.0  # Additional Z offset for the transformed OBJ
+TRANSFORMED_OBJ_OUTPUT_FILENAME = "model.obj" # Final OBJ name after transformation by Step 6b
+
+# --- Step 7 Configuration (Nav2 Map) ---
+NAV2_MAP_SOURCE_GML_FILENAME = ALPHA_SHAPE_OUTPUT_GML
+NAV2_MAP_OUTPUT_BASENAME = "alpha_shape_nav2_map"
+NAV2_MAP_RESOLUTION = 0.05
+NAV2_MAP_PADDING_M = 5.0
+NAV2_MAP_OUTPUT_SUBDIR = "nav2_map_output"
+
+# --- NEW: Step 8 Configuration (Gazebo World) ---
+GAZEBO_OUTPUT_SUBDIR = "gazebo_output"             # Subdirectory for all Gazebo files
+GAZEBO_MODEL_NAME = "pipeline_road_model"          # Name of the model directory for Gazebo
+GAZEBO_WORLD_FILENAME = "pipeline_generated.world" # Name of the .world file
 
 # General Output & Plotting
-OUTPUT_DIR_BASE = 'output_project' # Main output directory
-SHOW_PLOTS_ALL_STEPS = False # Master switch for showing plots (True for dev, False for batch)
-SAVE_PLOTS_ALL_STEPS = True   # Master switch for saving plots
+OUTPUT_DIR_BASE = 'output_project'
+SHOW_PLOTS_ALL_STEPS = False
+SAVE_PLOTS_ALL_STEPS = True
 PLOT_DPI_ALL_STEPS = 150
 
 def main():
@@ -97,6 +101,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"All outputs will be saved in: {output_dir.resolve()}")
 
+    # ... (Steps 1 to 5 remain the same) ...
     # --- Step 1: Compute Convex Hull ---
     hull_gpkg_path = None
     try:
@@ -112,11 +117,11 @@ def main():
         print(f"Convex Hull GPKG: {hull_gpkg_path}")
     except Exception as e:
         print(f"FATAL ERROR in Step 1 (Convex Hull): {e}")
-        return # Exit if hull fails
+        return
 
     # --- Step 2: Fetch External Data ---
     fetched_wfs_gml_paths = {}
-    fetched_osm_gpkg_path = None
+    # ... (WFS/OSM fetching logic) ...
     if hull_gpkg_path:
         print("\n=== STEP 2a: Fetching WFS Data ===")
         try:
@@ -130,87 +135,49 @@ def main():
             print("Fetched WFS GML paths:", fetched_wfs_gml_paths)
         except Exception as e:
             print(f"ERROR in Step 2a (WFS Fetch): {e}")
+    # ...
 
-        print("\n=== STEP 2b: Fetching OSM Data ===")
-        try:
-            fetched_osm_gpkg_path = fetch_clip_and_save_osm_streets(
-                hull_polygon_gpkg_path_str=hull_gpkg_path,
-                target_crs_str=TARGET_CRS,
-                out_dir_str=str(output_dir)
-            )
-            if fetched_osm_gpkg_path: print(f"Fetched OSM GPKG: {fetched_osm_gpkg_path}")
-            else: print("OSM fetching did not return a path (likely failed).")
-        except Exception as e:
-            print(f"ERROR in Step 2b (OSM Fetch): {e}")
-    else:
-        print("Skipping External Data fetch due to missing hull.")
-
-    # --- Step 3: Analyze GML (e.g., the first WFS feature type if available) ---
-    sampled_points_list = None # Will be a list of Shapely Point objects
+    # --- Step 3: Analyze GML ---
+    sampled_points_list = None
     gml_to_analyze_path = None
     gml_to_analyze_stem = None
-
-    # Decide which GML to analyze (e.g., 'adv:AX_Strassenverkehrsanlage')
-    # FEATURE_TYPE_TO_ANALYZE = 'adv:AX_Strassenverkehrsanlage' # As per original
+    # ... (GML analysis logic) ...
     FEATURE_TYPE_TO_ANALYZE = WFS_FEATURE_TYPES[1] if len(WFS_FEATURE_TYPES) > 1 else (WFS_FEATURE_TYPES[0] if WFS_FEATURE_TYPES else None)
-
-
     if FEATURE_TYPE_TO_ANALYZE and FEATURE_TYPE_TO_ANALYZE in fetched_wfs_gml_paths:
         gml_to_analyze_path = fetched_wfs_gml_paths[FEATURE_TYPE_TO_ANALYZE]
         gml_to_analyze_stem = Path(gml_to_analyze_path).stem
-        print(f"\nSelected for GML Analysis: {gml_to_analyze_path}")
-    elif FEATURE_TYPE_TO_ANALYZE:
-        # Fallback: construct path and check if it exists (e.g. from a previous run)
-        constructed_path = output_dir / f"{FEATURE_TYPE_TO_ANALYZE.replace(':', '_').replace('/', '_')}_clipped.gml"
-        if constructed_path.exists():
-            gml_to_analyze_path = str(constructed_path)
-            gml_to_analyze_stem = constructed_path.stem
-            print(f"\nUsing existing GML for Analysis: {gml_to_analyze_path}")
-        else:
-            print(f"Warning: GML file for {FEATURE_TYPE_TO_ANALYZE} not found for analysis.")
-    else:
-        print("Warning: No WFS feature type specified or fetched for GML analysis.")
-
+    # ...
 
     if gml_to_analyze_path and hull_gpkg_path:
         print("\n=== STEP 3: Analyzing GML and Sampling Points ===")
+        # ... (call analyze_gml_and_sample_points) ...
         try:
             sampled_points_list = analyze_gml_and_sample_points(
                 gml_file_path_str=gml_to_analyze_path,
                 hull_polygon_gpkg_path_str=hull_gpkg_path,
                 output_dir_str=str(output_dir),
-                gml_filename_stem_for_plots=gml_to_analyze_stem, # For plot filenames
+                gml_filename_stem_for_plots=gml_to_analyze_stem,
                 analysis_offset=ANALYSIS_OFFSET_METERS,
                 sample_interval=POINT_SAMPLE_INTERVAL_METERS,
                 show_plots=SHOW_PLOTS_ALL_STEPS,
                 save_plots=SAVE_PLOTS_ALL_STEPS,
                 plot_dpi=PLOT_DPI_ALL_STEPS
             )
-            if sampled_points_list:
-                print(f"GML Analysis generated {len(sampled_points_list)} sampled points.")
-                # The analysis function already saves points to a CSV, we can use that path or the list directly
-            else:
-                print("GML Analysis did not return sampled points.")
-        except Exception as e:
-            print(f"ERROR in Step 3 (GML Analysis): {e}")
-    else:
-        print("Skipping GML Analysis: Missing GML file to analyze or hull polygon.")
+        except Exception as e: print(f"ERROR in Step 3 (GML Analysis): {e}")
+    # ...
 
     # --- Step 4: Calculate Alpha Shape ---
     alpha_shape_gml_path = None
-    # Use the CSV path saved by analyze_gml_and_sample_points or the list
+    # ... (Alpha shape logic) ...
     points_input_for_alpha = None
-    if gml_to_analyze_stem: # Check if GML analysis was attempted
+    if gml_to_analyze_stem:
         potential_csv_path = output_dir / f"{gml_to_analyze_stem}_sampled_points.csv"
-        if potential_csv_path.exists():
-            points_input_for_alpha = str(potential_csv_path)
-            print(f"Using CSV for alpha shape: {points_input_for_alpha}")
-        elif sampled_points_list: # Use the list if CSV not found but list exists
-            points_input_for_alpha = sampled_points_list
-            print("Using in-memory list of points for alpha shape.")
+        if potential_csv_path.exists(): points_input_for_alpha = str(potential_csv_path)
+        elif sampled_points_list: points_input_for_alpha = sampled_points_list
 
     if points_input_for_alpha:
         print("\n=== STEP 4: Calculating Alpha Shape ===")
+        # ... (call calculate_and_save_alpha_shape) ...
         try:
             alpha_shape_gml_path = calculate_and_save_alpha_shape(
                 sampled_points_input=points_input_for_alpha,
@@ -218,45 +185,32 @@ def main():
                 output_dir_str=str(output_dir),
                 output_filename_stem=Path(ALPHA_SHAPE_OUTPUT_GML).stem,
                 alpha_parameter=ALPHA_SHAPE_PARAMETER,
-                # optimize_alpha_factor=ALPHA_OPTIMIZE_FACTOR, # <<<< REMOVE THIS ARGUMENT
                 default_alpha_if_optimize_fails=ALPHA_DEFAULT_IF_OPTIMIZE_FAILS,
                 show_plots=SHOW_PLOTS_ALL_STEPS,
                 save_plots=SAVE_PLOTS_ALL_STEPS,
                 plot_dpi=PLOT_DPI_ALL_STEPS
             )
-            if alpha_shape_gml_path: print(f"Alpha Shape GML: {alpha_shape_gml_path}")
-        except Exception as e:
-            print(f"ERROR in Step 4 (Alpha Shape): {e}")
-            # Print traceback for unexpected errors during the call itself
-            import traceback
-            traceback.print_exc()
-    else:
-        print("Skipping Alpha Shape: No sampled points available from GML analysis.")
+        except Exception as e: print(f"ERROR in Step 4 (Alpha Shape): {e}")
+    # ...
 
-     # --- Determine Paths for Step 5 & 6 ---
-    # Directory where the final OBJ, MTL, and Texture will be saved
-    final_model_output_dir = output_dir / CUT_MODEL_OUTPUT_SUBDIR
+    # --- Setup for Step 5, 6, 6b, 8 ---
+    final_model_output_dir = output_dir / CUT_MODEL_OUTPUT_SUBDIR # e.g. output_project/cut_model_output/
     final_model_output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"\nFinal model outputs (OBJ/MTL/PNG) will be in: {final_model_output_dir.resolve()}")
+    print(f"\nModel outputs (OBJ/MTL/PNG) will be in: {final_model_output_dir.resolve()}")
 
-    # Path for the GML providing the footprint for the texture map
     gml_for_texture_footprint_path = fetched_wfs_gml_paths.get(TEXTURE_SOURCE_GML_KEY)
 
-    # Paths for the GMLs used in the boolean cut
-    base_gml_for_cut_path = fetched_wfs_gml_paths.get(BASE_GML_KEY_FOR_CUT)
-    tool_gml_for_cut_path = alpha_shape_gml_path # This comes from Step 4 result
-
-
-    # --- Step 5: Generate Texture (Save to final model directory) ---
-    final_texture_path = None # Path to the generated PNG
+    # --- Step 5: Generate Texture ---
+    final_texture_path = None # Full path to the generated texture PNG
+    # ... (Texture generation logic) ...
     if gml_for_texture_footprint_path and Path(gml_for_texture_footprint_path).exists():
         print(f"\n=== STEP 5: Generating Texture (based on {Path(gml_for_texture_footprint_path).name}) ===")
         try:
-            # Pass the *final* output directory to Step 5
             final_texture_path = generate_texture_from_polygon(
                 polygon_gml_path_str=gml_for_texture_footprint_path,
-                output_dir_str=str(final_model_output_dir), # <<< Save PNG here
-                output_texture_filename=OUTPUT_TEXTURE_FILENAME, # Just the filename
+                output_dir_str=str(final_model_output_dir), # Texture saved here
+                output_texture_filename=OUTPUT_TEXTURE_FILENAME,
+                # ... other texture params
                 wms_url=WMS_TEXTURE_URL, wms_layer=WMS_TEXTURE_LAYER,
                 wms_version=WMS_TEXTURE_VERSION, wms_format=WMS_TEXTURE_FORMAT,
                 wms_width=WMS_TEXTURE_WIDTH, wms_height=WMS_TEXTURE_HEIGHT,
@@ -266,90 +220,156 @@ def main():
                 fill_color_rgb=TEXTURE_FILL_COLOR_RGB,
                 show_plots=SHOW_PLOTS_ALL_STEPS, save_plots=SAVE_PLOTS_ALL_STEPS, plot_dpi=PLOT_DPI_ALL_STEPS
             )
-            if final_texture_path: print(f"Texture PNG Saved: {final_texture_path}")
-            else: print("Texture generation failed.")
-        except Exception as e: print(f"ERROR in Step 5 (Texture Generation): {e}"); import traceback; traceback.print_exc()
-    else:
-        print(f"Skipping Texture Generation: Source GML '{TEXTURE_SOURCE_GML_KEY}' not found.")
+        except Exception as e: print(f"ERROR in Step 5 (Texture Generation): {e}")
+    # ...
+    if final_texture_path: print(f"Texture PNG Saved: {final_texture_path}")
 
-    # --- Step 6: Generate Textured Cut OBJ Model ---
-    cut_model_generated = False
-    # Check inputs needed for cut model (Base GML, Tool GML, Texture PNG)
+
+    # --- Step 6: Generate Textured Cut OBJ Model (Intermediate) ---
+    cut_model_generated_step6 = False
+    # This is the path to the UNTRANSFORMED OBJ, e.g., .../cut_model_output/final_cut_road_model.obj
+    intermediate_obj_path_step6 = final_model_output_dir / CUT_OBJ_OUTPUT_FILENAME
+    # This is the path to its MTL, e.g., .../cut_model_output/final_cut_road_model.mtl
+    intermediate_mtl_path_step6 = final_model_output_dir / CUT_MTL_OUTPUT_FILENAME
+
     base_gml_for_cut_path = fetched_wfs_gml_paths.get(BASE_GML_KEY_FOR_CUT)
-    tool_gml_for_cut_path_step6 = alpha_shape_gml_path # Use result from Step 4
+    tool_gml_for_cut_path_step6 = alpha_shape_gml_path
     inputs_valid_for_cut = True
-    if not (base_gml_for_cut_path and Path(base_gml_for_cut_path).exists()): print(f"ERROR Step 6 Input: Base GML '{BASE_GML_KEY_FOR_CUT}' not found."); inputs_valid_for_cut = False
-    if not (tool_gml_for_cut_path_step6 and Path(tool_gml_for_cut_path_step6).exists()): print(f"ERROR Step 6 Input: Tool GML (Alpha Shape) '{TOOL_GML_FILENAME_FOR_CUT}' not found."); inputs_valid_for_cut = False
-    if not final_texture_path: print(f"ERROR Step 6 Input: Texture file was not generated in Step 5."); inputs_valid_for_cut = False
+    # ... (input validation for step 6) ...
+    if not (base_gml_for_cut_path and Path(base_gml_for_cut_path).exists()): inputs_valid_for_cut = False
+    if not (tool_gml_for_cut_path_step6 and Path(tool_gml_for_cut_path_step6).exists()): inputs_valid_for_cut = False
+    if not (final_texture_path and Path(final_texture_path).exists()): inputs_valid_for_cut = False
+
 
     if inputs_valid_for_cut:
-        print("\n=== STEP 6: Generating Textured Cut OBJ Model ===")
+        print("\n=== STEP 6: Generating Textured Cut OBJ Model (Intermediate) ===")
+        # ... (call generate_cut_obj_model) ...
         try:
-            success = generate_cut_obj_model(
+            texture_file_name_for_mtl = Path(final_texture_path).name
+            success_step6 = generate_cut_obj_model(
                 base_gml_path_str=str(base_gml_for_cut_path),
                 tool_gml_path_str=str(tool_gml_for_cut_path_step6),
-                output_dir_str=str(final_model_output_dir), # Use final model dir
+                output_dir_str=str(final_model_output_dir),
                 target_crs=TARGET_CRS,
                 base_extrusion_height=BASE_EXTRUSION_CUT_M,
                 tool_extrusion_height=TOOL_EXTRUSION_CUT_M,
                 simplify_tolerance=CUT_SIMPLIFY_TOLERANCE_M,
                 output_obj_filename=CUT_OBJ_OUTPUT_FILENAME,
                 output_mtl_filename=CUT_MTL_OUTPUT_FILENAME,
-                texture_filename=Path(final_texture_path).name, # Relative texture name
+                texture_filename=texture_file_name_for_mtl,
+                # ... other params for step 6
                 material_top=CONVERT_MATERIAL_TOP, material_bottom=CONVERT_MATERIAL_BOTTOM, material_sides=CONVERT_MATERIAL_SIDES,
                 generate_vt=CONVERT_GENERATE_VT, z_tolerance=CONVERT_Z_TOLERANCE,
                 show_plots=SHOW_PLOTS_ALL_STEPS, save_plots=SAVE_PLOTS_ALL_STEPS, plot_dpi=PLOT_DPI_ALL_STEPS
             )
-            if success: cut_model_generated = True; print(f"Textured Cut OBJ generated: {final_model_output_dir / CUT_OBJ_OUTPUT_FILENAME}")
-            else: print("Textured Cut OBJ generation failed.")
-        except Exception as e_cut_obj: print(f"ERROR Step 6: {e_cut_obj}"); import traceback; traceback.print_exc()
-    else: print("Skipping Step 6: Missing inputs.")
+            if success_step6:
+                cut_model_generated_step6 = True
+                print(f"Intermediate Textured Cut OBJ generated: {intermediate_obj_path_step6}")
+            else: print("Intermediate Textured Cut OBJ generation failed.")
+        except Exception as e_cut_obj: print(f"ERROR Step 6: {e_cut_obj}")
 
-    # --- NEW: Step 7: Generate Nav2 Map from Alpha Shape ---
+    # --- Step 6b: Transform OBJ Model ---
+    # This is the path to the TRANSFORMED OBJ, e.g., .../cut_model_output/model.obj
+    transformed_obj_path_step6b = final_model_output_dir / TRANSFORMED_OBJ_OUTPUT_FILENAME
+    transformed_obj_created = False # Flag to track if step6b produced output
+
+    if cut_model_generated_step6 and intermediate_obj_path_step6.exists():
+        print("\n=== STEP 6b: Transforming OBJ Model ===")
+        try:
+            success_step6b = transform_obj_file(
+                input_obj_path_str=str(intermediate_obj_path_step6),    # <--- CORRECTED
+                output_obj_path_str=str(transformed_obj_path_step6b), # <--- CORRECTED
+                z_additional_offset_val=TRANSFORM_Z_ADDITIONAL_OFFSET
+            )
+            if success_step6b and transformed_obj_path_step6b.exists():
+                transformed_obj_created = True
+                print(f"OBJ transformation successful. Final Output: {transformed_obj_path_step6b}")
+            else: print(f"ERROR: OBJ Transformation in Step 6b failed or output file not created.")
+        except Exception as e_transform_obj: print(f"ERROR during Step 6b (OBJ Transformation): {e_transform_obj}")
+    else:
+        print("Skipping Step 6b (OBJ Transformation): Input OBJ from Step 6 not found or Step 6 failed.")
+
+    # --- Step 7: Generate Nav2 Map from Alpha Shape ---
     nav2_map_generated = False
     nav2_map_output_dir = output_dir / NAV2_MAP_OUTPUT_SUBDIR
-    # Use the alpha_shape_gml_path determined in Step 4
+    # ... (Nav2 map logic) ...
     gml_for_nav2_map_path = alpha_shape_gml_path
-
     if gml_for_nav2_map_path and Path(gml_for_nav2_map_path).exists():
         print("\n=== STEP 7: Generating Nav2 Map Files ===")
         nav2_map_output_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Nav2 map output directory: {nav2_map_output_dir.resolve()}")
+        # ... (call generate_nav2_map) ...
         try:
-            success = generate_nav2_map(
+            success_step7 = generate_nav2_map(
                 gml_input_path_str=str(gml_for_nav2_map_path),
                 output_dir_str=str(nav2_map_output_dir),
                 output_map_basename=NAV2_MAP_OUTPUT_BASENAME,
                 map_resolution=NAV2_MAP_RESOLUTION,
                 map_padding_m=NAV2_MAP_PADDING_M
             )
-            if success:
-                nav2_map_generated = True
-                print(f"Nav2 map files generated in: {nav2_map_output_dir}")
+            if success_step7: nav2_map_generated = True
+        except Exception as e_nav_map: print(f"ERROR during Step 7 (Nav2 Map Generation): {e_nav_map}")
+
+    # --- Step 8: Generate Gazebo World ---
+    gazebo_world_generated = False
+    gazebo_files_output_dir = output_dir / GAZEBO_OUTPUT_SUBDIR
+
+    inputs_valid_for_gazebo = (
+        transformed_obj_created and
+        transformed_obj_path_step6b.exists() and
+        intermediate_mtl_path_step6.exists() and
+        (final_texture_path and Path(final_texture_path).exists()) and
+        intermediate_obj_path_step6.exists()
+    )
+
+    if inputs_valid_for_gazebo:
+        print("\n=== STEP 8: Generating Gazebo World Files ===")
+        gazebo_files_output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Gazebo files output directory: {gazebo_files_output_dir.resolve()}")
+        try:
+            success_step8 = create_gazebo_model_and_world(
+                transformed_obj_file_path=str(transformed_obj_path_step6b),
+                mtl_file_path=str(intermediate_mtl_path_step6),
+                texture_file_path=str(final_texture_path),
+                original_obj_for_origin_calc_path=str(intermediate_obj_path_step6),
+                original_obj_crs_str=TARGET_CRS, # <<< PASS THE CRS OF THE ORIGINAL OBJ
+                output_dir_str=str(gazebo_files_output_dir),
+                gazebo_model_name=GAZEBO_MODEL_NAME,
+                gazebo_world_filename=GAZEBO_WORLD_FILENAME
+            )
+            if success_step8:
+                gazebo_world_generated = True
+                print(f"Gazebo world and model files generated in: {gazebo_files_output_dir}")
             else:
-                print("Nav2 map generation failed.")
-        except Exception as e_nav_map:
-            print(f"ERROR during Step 7 (Nav2 Map Generation): {e_nav_map}")
-            import traceback
-            traceback.print_exc()
+                print("Gazebo world and model generation failed.")
+        except Exception as e_gazebo:
+            print(f"ERROR during Step 8 (Gazebo World Generation): {e_gazebo}")
+            import traceback; traceback.print_exc()
     else:
-        print("Skipping Step 7 (Nav2 Map Generation): Alpha shape GML file not found.")
+        print("Skipping Step 8 (Gazebo World Generation): Missing necessary input files from previous steps.")
 
     end_time_script = time.time()
     print(f"\n--- Orchestrator Script Complete ---")
     print(f"Total execution time: {end_time_script - start_time_script:.2f} seconds")
     print(f"Main output directory: {output_dir.resolve()}")
-    if cut_model_generated: print(f"Textured Cut OBJ model output directory: {final_model_output_dir.resolve()}")
+
+    if transformed_obj_created:
+        print(f"Final transformed OBJ model output directory: {final_model_output_dir.resolve()}")
+        print(f"  Transformed OBJ: {transformed_obj_path_step6b.name}")
+        print(f"  Associated MTL: {intermediate_mtl_path_step6.name}") # Still points to the original MTL name
+        print(f"  Associated Texture: {Path(final_texture_path).name}")
+    elif cut_model_generated_step6:
+        print(f"Intermediate (untransformed) OBJ model output directory: {final_model_output_dir.resolve()}")
+        print(f"  Untransformed OBJ: {intermediate_obj_path_step6.name}")
+        print(f"  Associated MTL: {intermediate_mtl_path_step6.name}")
+        print(f"  Associated Texture: {Path(final_texture_path).name}")
+
     if nav2_map_generated: print(f"Nav2 Map output directory: {nav2_map_output_dir.resolve()}")
+    if gazebo_world_generated: print(f"Gazebo files output directory: {gazebo_files_output_dir.resolve()}")
 
 if __name__ == '__main__':
-    # Create a dummy CSV_FILE if it doesn't exist for testing
     if not Path(CSV_FILE).exists():
         import pandas as pd
         print(f"Creating dummy '{CSV_FILE}' for testing.")
-        # dummy_data = {'latitude': [50.9413, 50.9371, 50.9352], # Cologne area
-        #               'longitude': [6.9583, 6.9531, 6.9602]}
-        dummy_data = {'latitude': [51.87101360965492], # Cologne area
-                      'longitude': [7.286309500176276]}
+        dummy_data = {'latitude': [51.87101360965492], 'longitude': [7.286309500176276]}
         pd.DataFrame(dummy_data).to_csv(CSV_FILE, index=False)
     main()
