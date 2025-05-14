@@ -76,11 +76,14 @@ TRANSFORM_Z_ADDITIONAL_OFFSET = 0.0  # Additional Z offset for the transformed O
 TRANSFORMED_OBJ_OUTPUT_FILENAME = "model.obj" # Final OBJ name after transformation by Step 6b
 
 # --- Step 7 Configuration (Nav2 Map) ---
-NAV2_MAP_SOURCE_GML_FILENAME = ALPHA_SHAPE_OUTPUT_GML
+NAV2_MAP_BOUNDS_GML_KEY = 'adv:AX_Strassenverkehr' # Key for WFS data to use for map bounds
+NAV2_MAP_FREE_SPACE_GML_FILENAME = ALPHA_SHAPE_OUTPUT_GML # GML for free space (alpha shape)
 NAV2_MAP_OUTPUT_BASENAME = "alpha_shape_nav2_map"
 NAV2_MAP_RESOLUTION = 0.05
 NAV2_MAP_PADDING_M = 5.0
 NAV2_MAP_OUTPUT_SUBDIR = "nav2_map_output"
+
+    
 
 # --- NEW: Step 8 Configuration (Gazebo World) ---
 GAZEBO_OUTPUT_SUBDIR = "gazebo_output"             # Subdirectory for all Gazebo files
@@ -269,45 +272,77 @@ def main():
         except Exception as e_cut_obj: print(f"ERROR Step 6: {e_cut_obj}")
 
     # --- Step 6b: Transform OBJ Model ---
-    # This is the path to the TRANSFORMED OBJ, e.g., .../cut_model_output/model.obj
     transformed_obj_path_step6b = final_model_output_dir / TRANSFORMED_OBJ_OUTPUT_FILENAME
-    transformed_obj_created = False # Flag to track if step6b produced output
+    transformed_obj_created = False
+    obj_local_frame_origin_world_xy = None # To store (x,y) of local frame origin in world
+    obj_original_min_z_world = None      # To store original min_z of object in world
 
     if cut_model_generated_step6 and intermediate_obj_path_step6.exists():
         print("\n=== STEP 6b: Transforming OBJ Model ===")
         try:
-            success_step6b = transform_obj_file(
-                input_obj_path_str=str(intermediate_obj_path_step6),    # <--- CORRECTED
-                output_obj_path_str=str(transformed_obj_path_step6b), # <--- CORRECTED
-                z_additional_offset_val=TRANSFORM_Z_ADDITIONAL_OFFSET
+            # Capture all returned values
+            success_step6b, lx_world, ly_world, lz_orig_world = transform_obj_file(
+                input_obj_path_str=str(intermediate_obj_path_step6),
+                output_obj_path_str=str(transformed_obj_path_step6b),
+                z_additional_offset_val=TRANSFORM_Z_ADDITIONAL_OFFSET # This is your existing config
             )
             if success_step6b and transformed_obj_path_step6b.exists():
                 transformed_obj_created = True
+                obj_local_frame_origin_world_xy = (lx_world, ly_world)
+                obj_original_min_z_world = lz_orig_world # Not directly used by step7 by name, but part of concept
                 print(f"OBJ transformation successful. Final Output: {transformed_obj_path_step6b}")
-            else: print(f"ERROR: OBJ Transformation in Step 6b failed or output file not created.")
-        except Exception as e_transform_obj: print(f"ERROR during Step 6b (OBJ Transformation): {e_transform_obj}")
+                print(f"  Local Frame Origin (World): X={lx_world:.3f}, Y={ly_world:.3f}, Original_Min_Z={lz_orig_world:.3f}")
+            else:
+                print(f"ERROR: OBJ Transformation in Step 6b failed or output file not created.")
+        except Exception as e_transform_obj:
+            print(f"ERROR during Step 6b (OBJ Transformation): {e_transform_obj}")
+            # traceback.print_exc() # Optional
     else:
         print("Skipping Step 6b (OBJ Transformation): Input OBJ from Step 6 not found or Step 6 failed.")
 
     # --- Step 7: Generate Nav2 Map from Alpha Shape ---
     nav2_map_generated = False
     nav2_map_output_dir = output_dir / NAV2_MAP_OUTPUT_SUBDIR
-    # ... (Nav2 map logic) ...
-    gml_for_nav2_map_path = alpha_shape_gml_path
-    if gml_for_nav2_map_path and Path(gml_for_nav2_map_path).exists():
-        print("\n=== STEP 7: Generating Nav2 Map Files ===")
+
+    # Get the path for the bounds GML
+    bounds_gml_for_nav2_map_path_str = fetched_wfs_gml_paths.get(NAV2_MAP_BOUNDS_GML_KEY)
+    # Get the path for the free space GML (this was the old NAV2_MAP_SOURCE_GML_FILENAME)
+    free_space_gml_for_nav2_map_path_str = str(alpha_shape_gml_path) if alpha_shape_gml_path else None
+
+    inputs_valid_for_nav2 = True # Reset or adjust based on GML paths
+    if not (bounds_gml_for_nav2_map_path_str and Path(bounds_gml_for_nav2_map_path_str).exists()):
+        # ... handle missing bounds GML ...
+        inputs_valid_for_nav2 = False
+    # ... handle missing free space GML ...
+
+    if transformed_obj_created and obj_local_frame_origin_world_xy is None:
+        print("  Error: OBJ was transformed, but local frame origin details were not captured. Cannot proceed with aligned Nav2 map.")
+        inputs_valid_for_nav2 = False
+        
+    if inputs_valid_for_nav2 and transformed_obj_created: # Ensure OBJ transformation succeeded to get local frame
+        print("\n=== STEP 7: Generating Nav2 Map Files (Aligned with Transformed OBJ) ===")
         nav2_map_output_dir.mkdir(parents=True, exist_ok=True)
-        # ... (call generate_nav2_map) ...
         try:
+            # The Z for the map in the local frame will be the object's base Z in local frame
+            map_z_in_local_frame = TRANSFORM_Z_ADDITIONAL_OFFSET
+
             success_step7 = generate_nav2_map(
-                gml_input_path_str=str(gml_for_nav2_map_path),
+                bounds_gml_input_path_str=bounds_gml_for_nav2_map_path_str,
+                free_space_gml_input_path_str=free_space_gml_for_nav2_map_path_str,
+                obj_local_frame_origin_world_xy=obj_local_frame_origin_world_xy, # Pass the (x,y) world origin of local frame
+                obj_local_frame_base_z_val=map_z_in_local_frame, # Pass the Z value for map in local frame
                 output_dir_str=str(nav2_map_output_dir),
                 output_map_basename=NAV2_MAP_OUTPUT_BASENAME,
                 map_resolution=NAV2_MAP_RESOLUTION,
                 map_padding_m=NAV2_MAP_PADDING_M
             )
-            if success_step7: nav2_map_generated = True
-        except Exception as e_nav_map: print(f"ERROR during Step 7 (Nav2 Map Generation): {e_nav_map}")
+            if success_step7:
+                nav2_map_generated = True
+        except Exception as e_nav_map:
+            print(f"ERROR during Step 7 (Nav2 Map Generation): {e_nav_map}")
+            traceback.print_exc()
+    elif not transformed_obj_created:
+        print("Skipping Step 7: Transformed OBJ (and its local frame definition) not available.")
 
     # --- Step 8: Generate Gazebo World ---
     gazebo_world_generated = False
