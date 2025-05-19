@@ -2,6 +2,7 @@
 import os
 import time
 from pathlib import Path
+import math
 
 # Import functions from our step modules
 from step1_compute_hull import compute_and_save_convex_hull
@@ -13,6 +14,7 @@ from step5_generate_texture import generate_texture_from_polygon
 from step6_generate_cut_obj_model import generate_cut_obj_model
 from step6b_transform_obj import transform_obj_file # <<< NEW IMPORT
 from step7_generate_nav2_map import generate_nav2_map
+from step7b_generate_waypoints_yaml import generate_waypoints_yaml # <<< NEW IMPORT
 from step8_generate_gazebo_world import create_gazebo_model_and_world
 
 # --- Main Configuration ---
@@ -83,7 +85,10 @@ NAV2_MAP_RESOLUTION = 0.05
 NAV2_MAP_PADDING_M = 5.0
 NAV2_MAP_OUTPUT_SUBDIR = "nav2_map_output"
 
-    
+# --- Step 7b Configuration (Nav2 Waypoints) --- # <<< NEW CONFIG SECTION
+WAYPOINTS_OUTPUT_YAML_FILENAME = "nav_waypoints.yaml" # Will be saved in NAV2_MAP_OUTPUT_SUBDIR
+WAYPOINTS_DEFAULT_ORIENTATION_EULER_DEG = [0.0, 0.0, 0.0] # Roll, Pitch, Yaw in DEGREES
+WAYPOINTS_MAP_FRAME_ID = "map" # Frame ID for PoseStamped header in YAML    
 
 # --- NEW: Step 8 Configuration (Gazebo World) ---
 GAZEBO_OUTPUT_SUBDIR = "gazebo_output"             # Subdirectory for all Gazebo files
@@ -138,7 +143,17 @@ def main():
             print("Fetched WFS GML paths:", fetched_wfs_gml_paths)
         except Exception as e:
             print(f"ERROR in Step 2a (WFS Fetch): {e}")
-    # ...
+    
+    # print("\n=== STEP 2b: Fetching OSM Data ===")
+        # try:
+        #     osm_gpkg_path = fetch_clip_and_save_osm_streets(
+        #         hull_polygon_gpkg_path_str=hull_gpkg_path,
+        #         target_crs_str=TARGET_CRS,
+        #         out_dir_str=str(output_dir)
+        #     )
+        #     if osm_gpkg_path: print(f"Fetched OSM Streets GPKG: {osm_gpkg_path}")
+        # except Exception as e:
+        #     print(f"ERROR in Step 2b (OSM Fetch): {e}")
 
     # --- Step 3: Analyze GML ---
     sampled_points_list = None
@@ -343,6 +358,49 @@ def main():
             traceback.print_exc()
     elif not transformed_obj_created:
         print("Skipping Step 7: Transformed OBJ (and its local frame definition) not available.")
+
+    # --- Step 7b: Generate Waypoints YAML --- # <<< NEW STEP INTEGRATION
+    waypoints_yaml_generated = False
+    if transformed_obj_created and \
+       obj_local_frame_origin_world_xy is not None and \
+       obj_original_min_z_world is not None and \
+       Path(CSV_FILE).exists(): # Ensure input CSV exists
+        print("\n=== STEP 7b: Generating Nav2 Waypoints YAML ===")
+        try:
+            # Convert Euler angles from degrees to radians for the function
+            roll_rad = math.radians(WAYPOINTS_DEFAULT_ORIENTATION_EULER_DEG[0])
+            pitch_rad = math.radians(WAYPOINTS_DEFAULT_ORIENTATION_EULER_DEG[1])
+            yaw_rad = math.radians(WAYPOINTS_DEFAULT_ORIENTATION_EULER_DEG[2])
+            default_orientation_rad = [roll_rad, pitch_rad, yaw_rad]
+
+            # Waypoints Z in local frame = base Z of the transformed OBJ
+            waypoint_z_local = TRANSFORM_Z_ADDITIONAL_OFFSET
+
+            waypoints_output_path = nav2_map_output_dir / WAYPOINTS_OUTPUT_YAML_FILENAME
+
+            success_step7b = generate_waypoints_yaml(
+                csv_path_str=CSV_FILE,
+                source_crs_str=SOURCE_CRS,
+                intermediate_crs_str=TARGET_CRS,
+                obj_local_frame_origin_world_xy=obj_local_frame_origin_world_xy,
+                waypoint_z_in_local_frame=waypoint_z_local,
+                output_yaml_path_str=str(waypoints_output_path),
+                default_orientation_euler_rad=default_orientation_rad,
+                map_frame_id=WAYPOINTS_MAP_FRAME_ID
+            )
+            if success_step7b:
+                waypoints_yaml_generated = True
+                print(f"Waypoints YAML saved to: {waypoints_output_path}")
+            else:
+                print("Waypoint YAML generation failed.")
+        except Exception as e_waypoints:
+            print(f"ERROR during Step 7b (Waypoints YAML Generation): {e_waypoints}")
+            import traceback; traceback.print_exc()
+    else:
+        if not Path(CSV_FILE).exists():
+            print(f"Skipping Step 7b (Waypoints YAML): Input CSV file '{CSV_FILE}' not found.")
+        elif not (transformed_obj_created and obj_local_frame_origin_world_xy is not None and obj_original_min_z_world is not None):
+            print("Skipping Step 7b (Waypoints YAML): Required info from Step 6b (OBJ transformation) not available.")
 
     # --- Step 8: Generate Gazebo World ---
     gazebo_world_generated = False
