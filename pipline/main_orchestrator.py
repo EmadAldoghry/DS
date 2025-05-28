@@ -11,6 +11,7 @@ from step2b_fetch_osm import fetch_clip_and_save_osm_streets
 from step3_analyze_gml import analyze_gml_and_sample_points
 from step4_calculate_alpha_shape import calculate_and_save_alpha_shape
 from step5_generate_texture import generate_texture_from_polygon
+from step5b_mark_defects_on_texture import mark_defects_on_texture
 from step6_generate_cut_obj_model import generate_cut_obj_model
 from step6b_transform_obj import transform_obj_file # <<< NEW IMPORT
 from step7_generate_nav2_map import generate_nav2_map
@@ -51,12 +52,15 @@ WMS_TEXTURE_URL = "https://www.wms.nrw.de/geobasis/wms_nw_dop"
 WMS_TEXTURE_LAYER = "nw_dop_rgb"
 WMS_TEXTURE_VERSION = '1.3.0'
 WMS_TEXTURE_FORMAT = 'image/tiff'
-WMS_TEXTURE_WIDTH = 2048
-WMS_TEXTURE_HEIGHT = 2048
+WMS_TEXTURE_WIDTH = 5000
+WMS_TEXTURE_HEIGHT = 5000
 WMS_TEXTURE_TARGET_CRS = TARGET_CRS
 WMS_BBOX_PADDING_METERS = 20.0
 POLYGON_CRS_FALLBACK_FOR_TEXTURE = TARGET_CRS
 TEXTURE_FILL_COLOR_RGB = [128, 128, 128]
+
+# --- Config for Step 5b (Defect Marking) ---
+MARK_DEFECTS_ON_TEXTURE = True # Set to False to skip this step
 
 # --- Step 6 Configuration (GML to OBJ Generation) ---
 BASE_GML_KEY_FOR_CUT = 'adv:AX_Strassenverkehr'
@@ -219,16 +223,19 @@ def main():
     gml_for_texture_footprint_path = fetched_wfs_gml_paths.get(TEXTURE_SOURCE_GML_KEY)
 
     # --- Step 5: Generate Texture ---
-    final_texture_path = None # Full path to the generated texture PNG
-    # ... (Texture generation logic) ...
+    # Initialize variables that will hold results from step 5
+    base_texture_path_str = None
+    cropped_texture_transform = None
+    cropped_texture_crs_obj = None
+
     if gml_for_texture_footprint_path and Path(gml_for_texture_footprint_path).exists():
         print(f"\n=== STEP 5: Generating Texture (based on {Path(gml_for_texture_footprint_path).name}) ===")
         try:
-            final_texture_path = generate_texture_from_polygon(
+            # Unpack all three return values
+            temp_texture_path, temp_transform, temp_crs_obj = generate_texture_from_polygon(
                 polygon_gml_path_str=gml_for_texture_footprint_path,
-                output_dir_str=str(final_model_output_dir), # Texture saved here
+                output_dir_str=str(final_model_output_dir),
                 output_texture_filename=OUTPUT_TEXTURE_FILENAME,
-                # ... other texture params
                 wms_url=WMS_TEXTURE_URL, wms_layer=WMS_TEXTURE_LAYER,
                 wms_version=WMS_TEXTURE_VERSION, wms_format=WMS_TEXTURE_FORMAT,
                 wms_width=WMS_TEXTURE_WIDTH, wms_height=WMS_TEXTURE_HEIGHT,
@@ -238,10 +245,55 @@ def main():
                 fill_color_rgb=TEXTURE_FILL_COLOR_RGB,
                 show_plots=SHOW_PLOTS_ALL_STEPS, save_plots=SAVE_PLOTS_ALL_STEPS, plot_dpi=PLOT_DPI_ALL_STEPS
             )
-        except Exception as e: print(f"ERROR in Step 5 (Texture Generation): {e}")
-    # ...
-    if final_texture_path: print(f"Texture PNG Saved: {final_texture_path}")
+            # Assign to broader scope variables only if successful
+            if temp_texture_path and temp_transform and temp_crs_obj:
+                base_texture_path_str = temp_texture_path # Store as string
+                cropped_texture_transform = temp_transform
+                cropped_texture_crs_obj = temp_crs_obj
+                print(f"  Base Texture PNG Saved: {base_texture_path_str}")
+                print(f"  Texture CRS: {cropped_texture_crs_obj.srs}")
+            else:
+                print("  Error: Texture generation in Step 5 did not return all necessary info or failed.")
+        except Exception as e:
+            print(f"ERROR in Step 5 (Texture Generation): {e}")
+            traceback.print_exc()
+    else:
+        print("Skipping Step 5 (Texture Generation): Input GML for texture footprint not found or invalid.")
 
+    # Path to the texture that will be used by subsequent steps (might be modified by 5b)
+    # Initialize with the path from step 5, even if it's None
+    final_texture_path = Path(base_texture_path_str) if base_texture_path_str else None
+
+
+    # --- Step 5b: Mark Defects on Texture ---
+    if MARK_DEFECTS_ON_TEXTURE:
+        if base_texture_path_str and cropped_texture_transform and cropped_texture_crs_obj and Path(CSV_FILE).exists():
+            print("\n=== STEP 5b: Marking Defect Polygons on Texture ===")
+            try:
+                success_step5b = mark_defects_on_texture(
+                    base_texture_path_str=base_texture_path_str, # Pass the string path
+                    texture_affine_transform=cropped_texture_transform,
+                    texture_crs_pyproj_obj=cropped_texture_crs_obj,
+                    csv_path_str=CSV_FILE,
+                    defect_color_bgr=(0, 0, 0) # Black
+                )
+                if success_step5b:
+                    print(f"  Defect polygons marked on texture: {base_texture_path_str}")
+                    # final_texture_path_for_model remains the same Path object,
+                    # but its content is now modified.
+                else:
+                    print("  Warning: Defect polygon marking on texture failed. Using original texture from Step 5 if available.")
+            except Exception as e_defect_mark:
+                print(f"ERROR during Step 5b (Defect Polygon Marking): {e_defect_mark}")
+                traceback.print_exc()
+        else:
+            print("Skipping Step 5b (Defect Marking):")
+            if not (base_texture_path_str and cropped_texture_transform and cropped_texture_crs_obj):
+                 print("  - Base texture or its georeferencing info not available from Step 5.")
+            if not Path(CSV_FILE).exists():
+                 print(f"  - Input defect CSV file '{CSV_FILE}' not found.")
+    else:
+        print("Skipping Step 5b (Defect Marking) as per configuration.")
 
     # --- Step 6: Generate Textured Cut OBJ Model (Intermediate) ---
     cut_model_generated_step6 = False
